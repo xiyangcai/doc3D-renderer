@@ -32,12 +32,12 @@ save_blend_file=True
 
 def reset_blend():
     bpy.ops.wm.read_factory_settings()
-    bpy.context.scene.cursor_location = (0.0, 0.0, 0.0)
+    bpy.context.scene.cursor.location = (0.0, 0.0, 0.0)
 
     # only worry about data in the startup scene
     for bpy_data_iter in (
             bpy.data.meshes,
-            bpy.data.lamps,
+            bpy.data.lights,
             bpy.data.images,
             bpy.data.materials
             ):
@@ -48,14 +48,18 @@ def reset_blend():
 def isVisible(mesh, cam):    
     bm = bmesh.new()   # create an empty BMesh
     bm.from_mesh(mesh.data) 
-    cam_direction = cam.matrix_world.to_quaternion() * Vector((0.0, 0.0, -1.0))
+
+    cam_quat = cam.matrix_world.to_quaternion()
+    cam_direction = Vector((0.0, 0.0, -1.0))
+    cam_direction.rotate(cam_quat)
     cam_pos = cam.location
     # print(cam_direction)
     mat_world = mesh.matrix_world
     ct1 = 0
     ct2 = 0
     for v in bm.verts:
-        co_ndc = world_to_camera_view(bpy.context.scene, cam, mat_world * v.co)
+        v_co = mat_world @ v.co
+        co_ndc = world_to_camera_view(bpy.context.scene, cam, v_co)
         nm_ndc = cam_direction.angle(v.normal)
         # v1 = v.co - cam_pos
         # nm_ndc = v1.angle(v.normal)
@@ -77,10 +81,8 @@ def isVisible(mesh, cam):
 
 def select_object(ob):
     bpy.ops.object.select_all(action='DESELECT')
-    bpy.context.scene.objects.active = None
-    ob.select=True
-    bpy.context.scene.objects.active = ob
-
+    bpy.context.view_layer.objects.active = ob
+    ob.select_set(True)
 
 def prepare_scene():
     reset_blend()
@@ -93,7 +95,7 @@ def prepare_scene():
     if random.random() > 0.5:
         bpy.data.scenes['Scene'].view_settings.view_transform='Filmic'
     else:
-        bpy.data.scenes['Scene'].view_settings.view_transform='Default'
+        bpy.data.scenes['Scene'].view_settings.view_transform='Standard'
 
 
 def prepare_rendersettings():
@@ -110,35 +112,36 @@ def position_object(mesh_name):
     return mesh
 
 def add_lighting():
-    world=bpy.data.worlds['World']
+    world = bpy.data.worlds.get('World')
+    if world is None:
+        world = bpy.data.worlds.new('World')
     world.use_nodes = True
-    wnodes=world.node_tree.nodes
-    wlinks=world.node_tree.links
-    bg_node=wnodes['Background']
-    # hdr lighting
-    # remove old node
+    wnodes = world.node_tree.nodes
+    wlinks = world.node_tree.links
+    bg_node = wnodes.get('Background')
+
+    # Remove old nodes
     for node in wnodes:
-        if node.type in ['OUTPUT_WORLD', 'BACKGROUND']:
-            continue
-        else:
+        if node.type not in ['OUTPUT_WORLD', 'BACKGROUND']:
             wnodes.remove(node)
-    # hdr world lighting
+
+    # HDR Lighting
     if random.random() > 0.3:
         texcoord = wnodes.new(type='ShaderNodeTexCoord')
-        mapping = wnodes.new(type='ShaderNodeMapping')
-        mapping.rotation[2] = random.uniform(0, 6.28)
+        mapping = wnodes.new('ShaderNodeMapping')
+        mapping.inputs['Rotation'].default_value[2] = random.uniform(0, 6.28)
         wlinks.new(texcoord.outputs[0], mapping.inputs[0])
-        envnode=wnodes.new(type='ShaderNodeTexEnvironment')
+        envnode = wnodes.new(type='ShaderNodeTexEnvironment')
         wlinks.new(mapping.outputs[0], envnode.inputs[0])
         idx = random.randint(0, len(envlist) - 1)
         envp = envlist[idx]
         envnode.image = bpy.data.images.load(envp[0])
         envstr = int(envp[1])
-        bg_node.inputs[1].default_value=random.uniform(0.4 * envstr, 0.6 * envstr)
+        bg_node.inputs[1].default_value = random.uniform(0.4 * envstr, 0.6 * envstr)
         wlinks.new(envnode.outputs[0], bg_node.inputs[0])
     else:
-        # point light
-        bg_node.inputs[1].default_value=0
+        # Point Light
+        bg_node.inputs[1].default_value = 0
 
         d = random.uniform(3, 5)
         litpos = Vector((0, d, 0))
@@ -147,23 +150,25 @@ def add_lighting():
         eul.rotate_axis('X', random.uniform(math.radians(45), math.radians(135)))
         litpos.rotate(eul)
 
-        bpy.ops.object.add(type='LAMP', location=litpos)
-        lamp = bpy.data.lamps[0]
-        lamp.use_nodes = True
-        nodes=lamp.node_tree.nodes
-        links=lamp.node_tree.links
+        # Create a point light
+        light_data = bpy.data.lights.new(name="PointLight", type='POINT')
+        light_obj = bpy.data.objects.new(name="PointLight", object_data=light_data)
+        light_obj.location = litpos
+        bpy.context.collection.objects.link(light_obj)
+
+        # Set the warmness of light
+        light_data.use_nodes = True
+        nodes = light_data.node_tree.nodes
+        links = light_data.node_tree.links
         for node in nodes:
-            if node.type=='OUTPUT':
-                output_node=node
-            elif node.type=='EMISSION':
-                lamp_node=node
-        strngth=random.uniform(200,500)
-        lamp_node.inputs[1].default_value=strngth
-        #Change warmness of light to simulate more natural lighting
-        bbody=nodes.new(type='ShaderNodeBlackbody')
-        color_temp=random.uniform(2700,10200)
-        bbody.inputs[0].default_value=color_temp
-        links.new(bbody.outputs[0],lamp_node.inputs[0])
+            if node.type == 'OUTPUT':
+                output_node = node
+            elif node.type == 'EMISSION':
+                light_node = node
+        color_temp = random.uniform(2700, 10200)
+        bbody = nodes.new(type='ShaderNodeBlackbody')
+        bbody.inputs[0].default_value = color_temp
+        links.new(bbody.outputs[0], light_node.inputs[0])
 
     ## Area Lighting 
     # bpy.ops.object.lamp_add(type='AREA')
@@ -237,7 +242,7 @@ def reset_camera(mesh):
         eul.rotate_axis('Z', random.uniform(math.radians(-90 - st), math.radians(-90 + st)))
         
         camera.rotation_euler = eul
-        bpy.context.scene.update()
+        bpy.context.view_layer.update()
 
         if isVisible(mesh, camera):
             vid = True
@@ -298,35 +303,53 @@ def page_texturing(mesh, texpath):
 #     return id_name
 
 
-def color_wc_material(obj,mat_name):
-    # Remove lamp
-    for lamp in bpy.data.lamps:
-        bpy.data.lamps.remove(lamp, do_unlink=True)
+def color_wc_material(obj, mat_name):
+    # Remove all lights from the scene
+    for light in bpy.data.lights:
+        bpy.data.lights.remove(light, do_unlink=True)
+    
+    # Remove all light objects from the scene
+    for light_object in bpy.data.objects:
+        if light_object.type == 'LIGHT':
+            bpy.data.objects.remove(light_object, do_unlink=True)
 
-    select_object(obj)
-    # Add a new material
-    bpy.data.materials.new(mat_name)
-    obj.material_slots[0].material=bpy.data.materials[mat_name]
-    mat=bpy.data.materials[mat_name]
+    # Ensure the object is in object mode
+    if bpy.context.object != obj:
+        bpy.context.view_layer.objects.active = obj
+    if bpy.context.object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    
+    # Ensure the object has at least one material slot
+    if len(obj.material_slots) == 0:
+        # Directly add a material slot if there are none
+        obj.data.materials.append(None)  # Adding a placeholder material slot
+    
+    # Ensure the material exists
+    if mat_name not in bpy.data.materials:
+        bpy.data.materials.new(name=mat_name)
+    
+    # Assign the material to the first slot
+    obj.material_slots[0].material = bpy.data.materials[mat_name]
+    
+    # Setup the material nodes
+    mat = bpy.data.materials[mat_name]
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
 
-    # clear default nodes
-    for n in nodes:
-        nodes.remove(n)
+    # Clear default nodes
+    for node in nodes:
+        nodes.remove(node)
 
-    # Add an material output node
-    mat_node=nodes.new(type='ShaderNodeOutputMaterial')
-    # Add an emission node
-    em_node=nodes.new(type='ShaderNodeEmission')
-    # Add a geometry node
-    geo_node=nodes.new(type='ShaderNodeNewGeometry')
-    
-    # Connect each other
-    tree=mat.node_tree
-    links=tree.links
-    links.new(geo_node.outputs[0],em_node.inputs[0])
-    links.new(em_node.outputs[0],mat_node.inputs[0])
+    # Add nodes
+    mat_node = nodes.new(type='ShaderNodeOutputMaterial')
+    em_node = nodes.new(type='ShaderNodeEmission')
+    geo_node = nodes.new(type='ShaderNodeNewGeometry')
+
+    # Connect nodes
+    tree = mat.node_tree
+    links = tree.links
+    links.new(geo_node.outputs[0], em_node.inputs[0])
+    links.new(em_node.outputs[0], mat_node.inputs[0])
 
 
 def get_worldcoord_img(img_name):
@@ -349,80 +372,89 @@ def get_worldcoord_img(img_name):
     links.new(render_layers.outputs[0], file_output_node_0.inputs[0])
 
 def prepare_no_env_render():
-    # Remove lamp
-    for lamp in bpy.data.lamps:
-        bpy.data.lamps.remove(lamp, do_unlink=True)
+    # Remove all lamps (lights) from the scene
+    for light in bpy.data.lights:
+        bpy.data.lights.remove(light)
 
-    world=bpy.data.worlds['World']
-    world.use_nodes = True
-    links = world.node_tree.links
-    # clear default nodes
-    for l in links:
-        links.remove(l)
+    # Optionally, you may want to clear any existing light objects from the scene
+    for obj in bpy.data.objects:
+        if obj.type == 'LIGHT':
+            bpy.data.objects.remove(obj, do_unlink=True)
 
-    scene=bpy.data.scenes['Scene']
-    scene.cycles.samples=1
-    scene.cycles.use_square_samples=True
-    scene.view_settings.view_transform='Default'
 
 
 def render_pass(obj, objpath, texpath):
-    # change output image name to obj file name + texture name + random three
-    # characters (upper lower alphabet and digits)
-    fn = objpath.split('/')[-1][:-4] + '-' + texpath.split('/')[-1][:-4] + '-' + \
-        ''.join(random.sample(string.ascii_letters + string.digits, 3))
+    # Extract base names from object and texture paths
+    obj_basename = os.path.basename(objpath)
+    tex_basename = os.path.basename(texpath)
 
-    scene=bpy.data.scenes['Scene']
-    scene.render.layers['RenderLayer'].use_pass_uv=True
+    # Generate a unique filename based on object and texture base names
+    fn = f"{obj_basename}-{tex_basename}-{''.join(random.sample(string.ascii_letters + string.digits, 3))}"
+    print(f"Rendering to filename: {fn}")
+
+    scene = bpy.context.scene
+    view_layer = bpy.context.view_layer
+
+    # Enable necessary passes
+    view_layer.use_pass_uv = True
+
     bpy.context.scene.use_nodes = True
     tree = bpy.context.scene.node_tree
     links = tree.links
 
-    # clear default nodes
+    # Clear default nodes
     for n in tree.nodes:
         tree.nodes.remove(n)
 
-    # create input render layer node
+    # Create input render layer node
     render_layers = tree.nodes.new('CompositorNodeRLayers')
 
+    # Set up output nodes
     file_output_node_img = tree.nodes.new('CompositorNodeOutputFile')
     file_output_node_img.format.file_format = 'PNG'
     file_output_node_img.base_path = path_to_output_images
     file_output_node_img.file_slots[0].path = fn
-    imglk = links.new(render_layers.outputs[0], file_output_node_img.inputs[0])
-    scene.cycles.samples=128
-    bpy.ops.render.render(write_still=False)
+    links.new(render_layers.outputs['Image'], file_output_node_img.inputs[0])
 
-    # save_blend_file
+    # Render the image
+    scene.cycles.samples = 128
+    bpy.ops.render.render(write_still=True)
+
+    # Save blend file if needed
     if save_blend_file:
-        bpy.ops.wm.save_mainfile(filepath=path_to_output_blends+fn+'.blend')
+        bpy.ops.wm.save_mainfile(filepath=os.path.join(path_to_output_blends, fn + '.blend'))
 
-    # prepare to render without environment
+    # Prepare for rendering without environment
     prepare_no_env_render()
 
-    # remove img link
-    links.remove(imglk)
+    # Remove the image output link and set up UV output
+    for link in list(links):
+        if link.to_node == file_output_node_img:
+            links.remove(link)
 
-    # render 
     file_output_node_uv = tree.nodes.new('CompositorNodeOutputFile')
     file_output_node_uv.format.file_format = 'OPEN_EXR'
     file_output_node_uv.base_path = path_to_output_uv
     file_output_node_uv.file_slots[0].path = fn
-    uvlk = links.new(render_layers.outputs[4], file_output_node_uv.inputs[0])
-    scene.cycles.samples = 1
-    bpy.ops.render.render(write_still=False)
+    links.new(render_layers.outputs['UV'], file_output_node_uv.inputs[0])
 
-    # render world coordinates
-    color_wc_material(obj,'wcColor')
+    # Render UV pass
+    scene.cycles.samples = 1
+    bpy.ops.render.render(write_still=True)
+
+    # Render world coordinates
+    color_wc_material(obj, 'wcColor')
     get_worldcoord_img(fn)
-    bpy.ops.render.render(write_still=False)
+    bpy.ops.render.render(write_still=True)
 
     return fn
+
+
 
 def render_img(objpath, texpath):
     prepare_scene()
     prepare_rendersettings()
-    bpy.ops.import_scene.obj(filepath=objpath)
+    bpy.ops.wm.obj_import(filepath=objpath)
     mesh_name=bpy.data.meshes[0].name
     mesh=position_object(mesh_name)
     add_lighting()
@@ -439,36 +471,42 @@ id1 = int(sys.argv[-2])
 id2 = int(sys.argv[-1])
 rridx = int(sys.argv[-3])
 
-path_to_output_images='./img/{}/'.format(rridx)
-path_to_output_uv = './uv/{}/'.format(rridx)
-path_to_output_wc = './wc/{}/'.format(rridx)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+path_to_output_images = os.path.join(current_dir, 'img', str(rridx))
+path_to_output_uv = os.path.join(current_dir, 'uv', str(rridx))
+path_to_output_wc = os.path.join(current_dir, 'wc', str(rridx))
+
 if save_blend_file:
-    path_to_output_blends='./bld/{}/'.format(rridx)
+    path_to_output_blends = os.path.join(current_dir, 'bld', str(rridx))
 
 for fd in [path_to_output_images, path_to_output_uv, path_to_output_wc, path_to_output_blends]:
     if not os.path.exists(fd):
         os.makedirs(fd)
 
-env_list = './envs.csv'
-tex_list = './tex.csv'
-obj_list = './objs.csv'
+env_list = 'envs.csv'
+tex_list = 'tex.csv'
+obj_list = 'objs.csv'
 
 envlist = []
 with open(env_list, 'r') as f:
     envlist = list(csv.reader(f))
+envlist = [[os.path.abspath(env), x] for env, x in envlist]
 
 with open(tex_list, 'r') as t, open(obj_list, 'r') as m:
     texlist = list(csv.reader(t))
     objlist = list(csv.reader(m))
-    #print(objlist)
+
     for k in range(id1, id2):
         #print(k)
         objpath = objlist[k][0]
-        idx = random.randint(0, len(texlist))
-        texpath=texlist[idx][0]
-        print(objpath)
-        print(texpath)
+        idx = random.randint(0, len(texlist) - 1)
+        texpath = texlist[idx][0]
+
+        objpath = os.path.abspath(objpath)
+        texpath = os.path.abspath(texpath)
+
+        print(f"Object Path: {objpath}")
+        print(f"Texture Path: {texpath}")
 
         render_img(objpath, texpath)
-
-
